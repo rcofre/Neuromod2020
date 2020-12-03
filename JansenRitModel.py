@@ -41,20 +41,17 @@ seed = 0 #Random seed
 nnodes = 90 #number of nodes
 M = np.loadtxt('structural_Deco_AAL.txt')
 
-#Speed constants matrix for long-range connections
-D = np.loadtxt('speed_matrix_AAL.txt') #Base matrix
 
 #Normalization factor
-norm = np.sqrt(np.sum(M, axis = 1) * np.sum(M, axis = 0))   
-
-mean_speed = 54 #mean speed of D for M>0
-std_speed = 7.76 #std of D for M>0
+norm = np.sqrt(np.sum(M, axis = 1) * np.sum(M, axis = 0))
+#norm = np.mean(np.sum(M,0)) 
 
 #Node parameters
 a = 100 #Velocity constant for EPSPs (1/sec)
+ad = 50 #Velocity of constant long-range EPSPs (1/sec)
 b = 50 #Velocity constasnt for IPSPs (1/sec)
 p = 2 #Basal input to pyramidal population
-sigma = 2.25 #Input standard deviation
+sigma = 2 #Input standard deviation
 
 C = 135 #Global synaptic connectivity
 C1 = C * 1 #Connectivity between pyramidal pop. and excitatory pop.
@@ -75,10 +72,8 @@ v0 = 6 #V1/2
 r0, r1, r2 = 0.56, 0.56, 0.56 #Slopes of sigmoid functions
 
 #Initial conditions
-ic = np.ones((1, nnodes)) * np.array([0.131,  0.171, 0.343,
-                                      3.07, 2.96,  25.36])[:, None] 
-ic2 = np.stack((np.ones((nnodes, nnodes)) * 0.2, np.ones((nnodes, nnodes)) * 3.5), 0)
-
+ic = np.ones((1, nnodes)) * np.array([0.131,  0.171, 0.343, 0.21,
+                                      3.07, 2.96,  25.36, 2.42])[:, None] 
 
 @vectorize([float64(float64,float64)],nopython=True)
 #Sigmoid function
@@ -86,22 +81,15 @@ def s(v,r0):
     return (2 * e0) / (1 + np.exp(r0 * (v0 - v)))
 
 
-@jit(float64[:](float64[:,:],float64),nopython=True)
-#Long-range inputs function
-def Z(y_delay,t):
-    x3 = y_delay
-    return(np.sum(M / norm * x3, axis = 0))
-
-
-@jit(float64[:,:](float64[:,:],float64[:],float64),nopython=True)
+@jit(float64[:,:](float64[:,:],float64),nopython=True)
 #Jansen & Rit multicolumn model (intra-columnar outputs)
-def f1(y,z,t):
-    x0, x1, x2, y0, y1, y2 = y
+def f1(y,t):
+    x0, x1, x2, x3, y0, y1, y2, y3 = y
 
     noise = np.random.normal(0,sigma,nnodes)
-
+    
     x0_dot = y0
-    y0_dot = A * a * (s(C2 * x1 - C4 * x2 + C * alpha * z, r0)) - \
+    y0_dot = A * a * (s(C2 * x1 - C4 * x2 + C * alpha * x3, r0)) - \
              2 * a * y0 - a**2 * x0 
     x1_dot = y1
     y1_dot = A * a * (p + noise + s(C1 * x0 - C * beta * x2, r1)) - \
@@ -109,25 +97,15 @@ def f1(y,z,t):
     x2_dot = y2
     y2_dot = B * b * (s(C3 * x0, r2)) - \
              2 * b * y2 - b**2 * x2
-
-    return(np.vstack((x0_dot, x1_dot, x2_dot, y0_dot, y1_dot, y2_dot)))
-
-@jit(float64[:,:,:](float64[:,:],float64[:,:],float64[:,:],float64[:],float64),nopython=True)
-#Set of equations for inter-columnar outputs
-def f2(y_inputs, y_delay, y_aux, z, t):
-    x1, x2 = y_inputs
-    x3 = y_delay
-    y3 = y_aux
-    
-    inputs_exc = s(C2 * x1 - C4 * x2 + C * alpha * z, r0)
-     
     x3_dot = y3
-    y3_dot = A * D * np.repeat(inputs_exc,nnodes).reshape((nnodes,nnodes)) - 2 * D * y3 - D**2 * x3   
-    
-    return(np.stack((x3_dot,y3_dot)))
+    y3_dot = A * ad * (M / norm @ s(C2 * x1 - C4 * x2 + C * alpha * x3, r0)) - \
+             2 * ad * y3 - ad**2 * x3
 
-#This function is just for setting the random seed
+    return(np.vstack((x0_dot, x1_dot, x2_dot, x3_dot, y0_dot, y1_dot, y2_dot, y3_dot)))
+
+
 @jit(float64(float64),nopython=True)
+#This function is just for setting the random seed
 def set_seed(seed):
     np.random.seed(seed)
     return(seed)
@@ -163,11 +141,6 @@ def Sim(verbose = True):
     """
     global teq,tmax,ttotal,downsamp,M,D,seed
          
-    #Changing properties of D matrix
-#    D[M == 0] = 0
-#    D[M > 0] = D[M > 0] *  std_speed / np.std(D[M > 0])
-#    D[M > 0] = D[M > 0] + (mean_speed - np.mean(D[M > 0]))    
-
     if M.shape[0]!=M.shape[1] or M.shape[0]!=nnodes:
         raise ValueError("check M dimensions (",M.shape,") and number of nodes (",nnodes,")")
     
@@ -183,53 +156,36 @@ def Sim(verbose = True):
     Neq = int(teq / dt / downsamp) #Number of points to discard
     Nmax = int(tmax/dt / downsamp) #Number of points of final simulated recordings
     Ntotal = Neq + Nmax #Total number of points of total simulated recordings
-    
+   
     #Time vector
     time_vector = np.linspace(0, ttotal, Ntotal)
-    
-    row = 6 #Number of variables of the Jansen & Rit model
+
+    row = 8 #Number of variables of the Jansen & Rit model
     col = nnodes #Number of nodes
     y_temp = np.copy(ic) #Temporal vector to update y values
     y = np.zeros((Ntotal, row, col)) #Matrix to store values
-    z = np.zeros((Ntotal,col)) #Long-range inputs without scaling
     y[0,:,:] = np.copy(ic) #First set of initial conditions
-    y_inter = np.copy(ic2)  #Second set of inital conditions
-    y_delay = y_inter[0,:,:] #Temporal vector for updating long-range outputs
-    y_aux = y_inter[1,:,:]  #Temporal vector for updating long-range outputs' speed
     
-    Z.recompile()
     f1.recompile()
-    f2.recompile() 
-    
-    z[0,:] = Z(y_delay,0) #z initial conditions
-    z_temp = z[0,:] #Temporal vector to update z values
-    
-    set_seed(seed) #Set the random seed
+
+    set_seed(seed); #Set the random seed
     
     if verbose == True:
         for i in range(1,Nsim):
-            y_temp += dt * f1(y_temp, z_temp, i)       
-            y_inter += dt * f2(y_temp[[1,2],:], y_delay, y_aux, z_temp, i)
-            y_delay, y_aux = y_inter[0,:,:], y_inter[1,:,:]
-            z_temp = Z(y_delay, i)
+            y_temp += dt * f1(y_temp, i) 
             #This line is for store values each dws points
             if (i % downsamp) == 0:
                 y[i//downsamp,:,:] = y_temp
-                z[i//downsamp,:] = z_temp
             if (i % (10 / dt)) == 0:
                 print('Elapsed time: %i seconds'%(i * dt)) #this is for impatient people
     else:
         for i in range(1,Nsim):
-            y_temp += dt * f1(y_temp, z_temp, i)       
-            y_inter += dt * f2(y_temp[[1,2],:], y_delay, y_aux, z_temp, i)
-            y_delay, y_aux = y_inter[0,:,:], y_inter[1,:,:]
-            z_temp = Z(y_delay, i)
+            y_temp += dt * f1(y_temp, i) 
             #This line is for store values each dws points
             if (i % downsamp) == 0:
-                y[i//downsamp,:,:] = y_temp
-                z[i//downsamp,:] = z_temp        
+                y[i//downsamp,:,:] = y_temp 
        
-    return(y, time_vector, z)
+    return(y, time_vector)
 
 
 def ParamsNode():
