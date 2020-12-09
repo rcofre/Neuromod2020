@@ -225,7 +225,6 @@ L = 100 #Window length (in seconds)
 mode = 2 #Mode of the FCD. 1: Pearson, 2: Clarkson
 
 FCD_matrix, L_points, steps = FCD.extract_FCD(BOLDfilt, L = L, mode = mode, dt = BOLD_dt, steps = 2)
-FCD_matrix *= np.sqrt(2)
 
 #Calculate the typical FCD speed (dtyp) and FCD variance (varFCD, multistability)
 dtyp, varFCD = FCD.FCD_vars(FCD_matrix, L_points, steps, bins = 20, vmin = 0, vmax = 1)
